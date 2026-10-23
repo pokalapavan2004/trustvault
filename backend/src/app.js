@@ -8,6 +8,7 @@ const authRouter = require('./routes/auth');
 const profileRouter = require('./routes/profile');
 const documentsRouter = require('./routes/documents');
 const usersRouter = require('./routes/users');
+const activityLogsRouter = require('./routes/audit');
 
 const app = express();
 
@@ -42,6 +43,7 @@ app.use('/api/auth', authRouter);
 app.use('/api/profile', profileRouter);
 app.use('/api/documents', documentsRouter);
 app.use('/api/users', usersRouter);
+app.use('/api/activity-logs', activityLogsRouter);
 
 // 404 handler for undefined routes
 app.use((req, res) => {

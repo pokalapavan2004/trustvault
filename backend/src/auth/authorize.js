@@ -5,10 +5,12 @@
 // Security invariant 2: Return 404 (not 403) for documents the user cannot access,
 // so existence is not leaked.
 
+const crypto = require('crypto');
 const db = require('../db');
 
 // UUID format validation regex (matches RFC 4122 v1-v5 UUIDs)
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const GENESIS_HASH = '0000000000000000000000000000000000000000000000000000000000000000';
 
 // Custom NotFoundError ensuring uniform 404 responses without leaking document existence
 class NotFoundError extends Error {
@@ -20,11 +22,62 @@ class NotFoundError extends Error {
 }
 
 /**
- * Placeholder audit log hook structured for central integration.
- * Denied and granted attempts pass through here so audit logging can be added in one place later.
+ * Records an access attempt (both authorized and unauthorized) into the immutable audit_logs table
+ * using a cryptographic hash chain (Invariant 6).
  */
-async function recordAuditAttempt({ user, documentId, action, allowed, reason }) {
-  // Structured hook: will insert into audit log with cryptographic hash chain in audit milestone
+async function recordAuditAttempt({ user, documentId, documentTitle, action, allowed, reason }) {
+  try {
+    // 1. Fetch latest audit log row to retrieve previous_hash
+    const lastRowRes = await db.query(
+      'SELECT hash FROM audit_logs ORDER BY created_at DESC, id DESC LIMIT 1'
+    );
+    const prevHash = lastRowRes.rows.length > 0 ? lastRowRes.rows[0].hash : GENESIS_HASH;
+
+    const createdAt = new Date().toISOString();
+    const userId = user?.id || null;
+    const username = user?.username || 'unknown';
+    const userEmail = user?.email || null;
+    const docId = (documentId && UUID_REGEX.test(documentId)) ? documentId : null;
+    const docTitle = documentTitle || null;
+
+    // 2. Canonical payload for cryptographic chaining:
+    // previous_hash|user_id|doc_id|action|allowed|reason|created_at
+    const canonicalPayload = [
+      prevHash,
+      userId || 'none',
+      docId || 'none',
+      action,
+      allowed ? 'true' : 'false',
+      reason,
+      createdAt
+    ].join('|');
+
+    const rowHash = crypto.createHash('sha256').update(canonicalPayload).digest('hex');
+
+    // 3. Insert into audit_logs table
+    await db.query(
+      `INSERT INTO audit_logs (
+        user_id, username, user_email, document_id, document_title,
+        action, allowed, reason, previous_hash, hash, created_at
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+      [
+        userId,
+        username,
+        userEmail,
+        docId,
+        docTitle,
+        action,
+        allowed,
+        reason,
+        prevHash,
+        rowHash,
+        createdAt
+      ]
+    );
+  } catch (err) {
+    console.error('Audit log recording error:', err.message);
+  }
 }
 
 /**
@@ -89,7 +142,14 @@ async function authorize(user, documentId, action) {
 
   // 3. Deleted documents: denied for everyone
   if (document.deleted_at !== null) {
-    await recordAuditAttempt({ user, documentId, action, allowed: false, reason: 'DELETED' });
+    await recordAuditAttempt({
+      user,
+      documentId,
+      documentTitle: document.title,
+      action,
+      allowed: false,
+      reason: 'DELETED'
+    });
     throw new NotFoundError();
   }
 
@@ -147,16 +207,32 @@ async function authorize(user, documentId, action) {
   }
 
   if (!allowed) {
-    await recordAuditAttempt({ user, documentId, action, allowed: false, reason: 'PERMISSION_DENIED' });
+    await recordAuditAttempt({
+      user,
+      documentId,
+      documentTitle: document.title,
+      action,
+      allowed: false,
+      reason: 'PERMISSION_DENIED'
+    });
     throw new NotFoundError();
   }
 
   // Access granted: record audit and return document
-  await recordAuditAttempt({ user, documentId, action, allowed: true, reason: 'AUTHORIZED' });
+  await recordAuditAttempt({
+    user,
+    documentId,
+    documentTitle: document.title,
+    action,
+    allowed: true,
+    reason: 'AUTHORIZED'
+  });
   return document;
 }
 
 module.exports = {
   authorize,
+  recordAuditAttempt,
   NotFoundError
 };
+

@@ -305,6 +305,20 @@ export default function App() {
                 </svg>
                 Categories
               </button>
+
+              <button
+                className={`sidebar-item ${currentView === 'activity_logs' ? 'active' : ''}`}
+                onClick={() => { setCurrentView('activity_logs'); setSidebarOpen(false); }}
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                  <polyline points="14 2 14 8 20 8"/>
+                  <line x1="16" y1="13" x2="8" y2="13"/>
+                  <line x1="16" y1="17" x2="8" y2="17"/>
+                  <polyline points="10 9 9 9 8 9"/>
+                </svg>
+                Activity Logs
+              </button>
             </>
           )}
         </nav>
@@ -332,6 +346,7 @@ export default function App() {
               {currentView === 'shared_with_me' && 'Shared with Me'}
               {currentView === 'all_documents' && 'All Documents'}
               {currentView === 'users' && 'User Management'}
+              {currentView === 'activity_logs' && 'Activity Logs & Audit Trail'}
               {currentView === 'search' && 'Search Documents'}
               {currentView === 'categories' && 'Document Categories'}
               {currentView === 'upload' && 'Upload Document'}
@@ -449,6 +464,13 @@ export default function App() {
             <UsersAdminView user={user} />
           )}
 
+          {/* Activity Logs (Admin) */}
+          {currentView === 'activity_logs' && isAdmin && (
+            <AdminDashboardView
+              onManageAccess={(doc) => setAccessModalDoc(doc)}
+            />
+          )}
+
           {/* Search Documents Page */}
           {currentView === 'search' && (
             <SearchDocumentsView
@@ -551,6 +573,7 @@ function UserDashboardView({ user, onGoUpload, onManageAccess, onEditDoc }) {
   const [mineCount, setMineCount] = useState(0);
   const [sharedCount, setSharedCount] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [msg, setMsg] = useState('');
 
   const loadData = async () => {
     try {
@@ -574,6 +597,26 @@ function UserDashboardView({ user, onGoUpload, onManageAccess, onEditDoc }) {
     loadData();
   }, []);
 
+  const handleDelete = async (doc) => {
+    if (!window.confirm(`Are you sure you want to delete "${doc.title}"?`)) return;
+
+    try {
+      const res = await fetch(`/api/documents/${doc.id}`, {
+        method: 'DELETE',
+        credentials: 'include'
+      });
+      if (res.ok) {
+        setMsg(`Document "${doc.title}" was deleted.`);
+        loadData();
+      } else {
+        const data = await res.json().catch(() => ({}));
+        alert(data.error || 'Failed to delete document');
+      }
+    } catch (err) {
+      alert(err.message);
+    }
+  };
+
   return (
     <div>
       <div className="metrics-row">
@@ -587,6 +630,8 @@ function UserDashboardView({ user, onGoUpload, onManageAccess, onEditDoc }) {
           <div className="metric-value">{sharedCount}</div>
         </div>
       </div>
+
+      {msg && <div className="alert-box alert-success" style={{ marginBottom: '16px' }}>{msg}</div>}
 
       <div className="table-card">
         <div className="table-header-row">
@@ -640,12 +685,20 @@ function UserDashboardView({ user, onGoUpload, onManageAccess, onEditDoc }) {
                         Download
                       </button>
                       {doc.is_owner && (
-                        <button
-                          className="btn-outline"
-                          onClick={() => onManageAccess(doc)}
-                        >
-                          Manage Access
-                        </button>
+                        <>
+                          <button
+                            className="btn-outline"
+                            onClick={() => onManageAccess(doc)}
+                          >
+                            Manage Access
+                          </button>
+                          <button
+                            className="btn-danger"
+                            onClick={() => handleDelete(doc)}
+                          >
+                            Delete
+                          </button>
+                        </>
                       )}
                       {doc.my_permission === 'edit' && (
                         <button
@@ -676,6 +729,12 @@ function AdminDashboardView({ onManageAccess }) {
   const [recentUploads, setRecentUploads] = useState([]);
   const [loading, setLoading] = useState(true);
 
+  // Activity / Audit Logs State
+  const [logs, setLogs] = useState([]);
+  const [logCounts, setLogCounts] = useState({ total_count: 0, allowed_count: 0, denied_count: 0 });
+  const [logFilter, setLogFilter] = useState('all');
+  const [logsLoading, setLogsLoading] = useState(true);
+
   const loadAdminData = async () => {
     try {
       setLoading(true);
@@ -702,13 +761,51 @@ function AdminDashboardView({ onManageAccess }) {
     }
   };
 
+  const loadActivityLogs = async (statusFilter = logFilter) => {
+    try {
+      setLogsLoading(true);
+      const queryParam = statusFilter !== 'all' ? `?status=${statusFilter}` : '';
+      const res = await fetch(`/api/activity-logs${queryParam}`, { credentials: 'include' });
+      if (res.ok) {
+        const data = await res.json();
+        setLogs(data.logs || []);
+        if (data.counts) {
+          setLogCounts(data.counts);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to load activity logs:', err);
+    } finally {
+      setLogsLoading(false);
+    }
+  };
+
   useEffect(() => {
     loadAdminData();
   }, []);
 
+  useEffect(() => {
+    loadActivityLogs(logFilter);
+  }, [logFilter]);
+
+  const formatActionName = (action) => {
+    switch (action) {
+      case 'download': return 'Download File';
+      case 'view_metadata': return 'View Metadata';
+      case 'edit': return 'Edit Document';
+      case 'delete': return 'Delete Document';
+      case 'share': return 'Share Document';
+      case 'revoke': return 'Revoke Grant';
+      case 'list_grants': return 'List Grants';
+      case 'upload': return 'Upload File';
+      default: return action;
+    }
+  };
+
   return (
     <div>
-      <div className="metrics-row">
+      {/* Metrics Row */}
+      <div className="metrics-row" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))' }}>
         <div className="metric-card">
           <span className="metric-label">Total Users</span>
           <div className="metric-value">{userCount}</div>
@@ -718,8 +815,146 @@ function AdminDashboardView({ onManageAccess }) {
           <span className="metric-label">Total Documents</span>
           <div className="metric-value">{docCount}</div>
         </div>
+
+        <div className="metric-card">
+          <span className="metric-label" style={{ color: '#6ee7b7' }}>Authorized Accesses</span>
+          <div className="metric-value" style={{ color: '#6ee7b7' }}>{logCounts.allowed_count || 0}</div>
+        </div>
+
+        <div className="metric-card">
+          <span className="metric-label" style={{ color: '#fda4af' }}>Unauthorized Attempts</span>
+          <div className="metric-value" style={{ color: '#fda4af' }}>{logCounts.denied_count || 0}</div>
+        </div>
       </div>
 
+      {/* Activity Logs (Admin Only) */}
+      <div className="table-card" style={{ marginBottom: '28px' }}>
+        <div className="table-header-row" style={{ flexWrap: 'wrap', gap: '12px' }}>
+          <div>
+            <h2 className="table-title">Document Access Activity & Audit Trail</h2>
+            <p style={{ fontSize: '0.8125rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+              Cryptographic log of granted accesses and unauthorized access attempts (Admin only)
+            </p>
+          </div>
+
+          <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+            <div className="filter-tabs">
+              <button
+                className={`filter-tab ${logFilter === 'all' ? 'active' : ''}`}
+                onClick={() => setLogFilter('all')}
+              >
+                All ({logCounts.total_count || 0})
+              </button>
+              <button
+                className={`filter-tab ${logFilter === 'allowed' ? 'active' : ''}`}
+                onClick={() => setLogFilter('allowed')}
+              >
+                ✓ Authorized ({logCounts.allowed_count || 0})
+              </button>
+              <button
+                className={`filter-tab ${logFilter === 'denied' ? 'active' : ''}`}
+                onClick={() => setLogFilter('denied')}
+              >
+                ⚠ Denied ({logCounts.denied_count || 0})
+              </button>
+            </div>
+
+            <button
+              className="btn-outline"
+              onClick={() => loadActivityLogs(logFilter)}
+              style={{ fontSize: '0.75rem', padding: '6px 10px' }}
+              title="Refresh logs"
+            >
+              Refresh
+            </button>
+          </div>
+        </div>
+
+        {logsLoading ? (
+          <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text-secondary)' }}>
+            Loading activity audit trail...
+          </div>
+        ) : logs.length === 0 ? (
+          <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text-secondary)' }}>
+            No activity log records recorded yet.
+          </div>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Timestamp</th>
+                  <th>User</th>
+                  <th>Target Document</th>
+                  <th>Action Requested</th>
+                  <th>Access Decision</th>
+                  <th style={{ textAlign: 'right' }}>Hash Chain Proof</th>
+                </tr>
+              </thead>
+              <tbody>
+                {logs.map((log) => (
+                  <tr key={log.id}>
+                    <td style={{ whiteSpace: 'nowrap', fontSize: '0.8125rem' }}>
+                      {new Date(log.created_at).toLocaleString()}
+                    </td>
+                    <td>
+                      <strong>{log.username}</strong>
+                      {log.user_email && (
+                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{log.user_email}</div>
+                      )}
+                    </td>
+                    <td>
+                      {log.document_title ? (
+                        <>
+                          <div style={{ fontWeight: 600 }}>{log.document_title}</div>
+                          {log.document_id && (
+                            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                              {log.document_id.slice(0, 8)}...
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        <span style={{ color: 'var(--text-muted)', fontStyle: 'italic', fontSize: '0.8125rem' }}>
+                          {log.document_id ? `ID: ${log.document_id.slice(0, 8)}...` : 'Unknown / Missing'}
+                        </span>
+                      )}
+                    </td>
+                    <td>
+                      <span className="action-pill">{formatActionName(log.action)}</span>
+                    </td>
+                    <td>
+                      {log.allowed ? (
+                        <span className="log-badge-allowed">
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                            <polyline points="20 6 9 17 4 12"/>
+                          </svg>
+                          Granted
+                        </span>
+                      ) : (
+                        <span className="log-badge-denied" title={`Attempt blocked: ${log.reason}`}>
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                            <circle cx="12" cy="12" r="10"/>
+                            <line x1="12" y1="8" x2="12" y2="12"/>
+                            <line x1="12" y1="16" x2="12.01" y2="16"/>
+                          </svg>
+                          Denied ({log.reason || 'Unauthorized'})
+                        </span>
+                      )}
+                    </td>
+                    <td style={{ textAlign: 'right' }}>
+                      <span className="hash-pill" title={`SHA256: ${log.hash}\nPrevious: ${log.previous_hash}`}>
+                        ⛓ {log.hash ? log.hash.slice(0, 10) : 'genesis'}...
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Recent Uploads (Metadata Only) */}
       <div className="table-card">
         <div className="table-header-row">
           <h2 className="table-title">Recent Uploads (Metadata Only)</h2>
@@ -1804,6 +2039,19 @@ function UploadPageView({ onUploadSuccess }) {
       return;
     }
 
+    // Consolidate shares, including any pending email in the input box
+    let finalShares = [...shares];
+    if (newEmail.trim()) {
+      const emailClean = newEmail.trim().toLowerCase();
+      if (!EMAIL_REGEX.test(emailClean)) {
+        setError('Please enter a valid recipient email or clear the field before uploading');
+        return;
+      }
+      if (!finalShares.some((s) => s.email === emailClean)) {
+        finalShares.push({ email: emailClean, permission: newPermission });
+      }
+    }
+
     setUploading(true);
 
     try {
@@ -1813,8 +2061,8 @@ function UploadPageView({ onUploadSuccess }) {
       formData.append('category', category);
       formData.append('file', file);
 
-      if (shares.length > 0) {
-        formData.append('sharedWith', JSON.stringify(shares));
+      if (finalShares.length > 0) {
+        formData.append('sharedWith', JSON.stringify(finalShares));
       }
 
       const res = await fetch('/api/documents', {

@@ -60,3 +60,37 @@ CREATE TABLE IF NOT EXISTS grants (
 
 CREATE INDEX IF NOT EXISTS idx_grants_user_id ON grants(user_id);
 CREATE INDEX IF NOT EXISTS idx_grants_document_id ON grants(document_id);
+
+-- 5. Audit logs table (append-only, cryptographic hash chain, immutable)
+CREATE TABLE IF NOT EXISTS audit_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID,
+    username VARCHAR(30),
+    user_email VARCHAR(255),
+    document_id UUID,
+    document_title VARCHAR(255),
+    action VARCHAR(50) NOT NULL,
+    allowed BOOLEAN NOT NULL,
+    reason VARCHAR(50) NOT NULL,
+    previous_hash VARCHAR(64) NOT NULL,
+    hash VARCHAR(64) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_logs_user_id ON audit_logs(user_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_document_id ON audit_logs(document_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at);
+
+-- Trigger to enforce append-only immutability (Invariant 6)
+CREATE OR REPLACE FUNCTION reject_audit_log_modification()
+RETURNS TRIGGER AS $$
+BEGIN
+    RAISE EXCEPTION 'Audit log entries are immutable and append-only';
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_audit_logs_immutable ON audit_logs;
+CREATE TRIGGER trg_audit_logs_immutable
+BEFORE UPDATE OR DELETE ON audit_logs
+FOR EACH ROW
+EXECUTE FUNCTION reject_audit_log_modification();

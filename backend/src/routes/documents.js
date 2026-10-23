@@ -8,7 +8,7 @@ const crypto = require('crypto');
 const multer = require('multer');
 const db = require('../db');
 const requireAuth = require('../middleware/requireAuth');
-const { authorize, NotFoundError } = require('../auth/authorize');
+const { authorize, recordAuditAttempt, NotFoundError } = require('../auth/authorize');
 
 const router = express.Router();
 
@@ -264,6 +264,15 @@ router.post('/', requireAuth, upload.single('file'), async (req, res, next) => {
     }
 
     await client.query('COMMIT');
+
+    await recordAuditAttempt({
+      user: req.user,
+      documentId: createdDoc.id,
+      documentTitle: createdDoc.title,
+      action: 'upload',
+      allowed: true,
+      reason: 'AUTHORIZED'
+    });
 
     return res.status(201).json({
       message: 'Document uploaded successfully',
