@@ -35,7 +35,9 @@ async function requireAuth(req, res, next) {
         s.id AS session_id,
         s.expires_at,
         u.id AS user_id,
+        u.username,
         u.email,
+        u.full_name,
         u.role,
         u.is_active,
         u.created_at
@@ -69,7 +71,9 @@ async function requireAuth(req, res, next) {
     // Attach trusted user and session info from DB
     req.user = {
       id: row.user_id,
+      username: row.username,
       email: row.email,
+      fullName: row.full_name,
       role: row.role,
       isActive: row.is_active,
       createdAt: row.created_at

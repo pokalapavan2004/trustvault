@@ -1,7 +1,15 @@
 // db/seed.js
-// Seeds initial users (1 admin, 2 owners, 2 viewers) with passwords from environment variables
+// Seeds the initial administrator account from environment variables.
+// Regular users register through the web interface and are stored in the users table.
 
 const path = require('path');
+
+// Ensure modules can be resolved from backend/node_modules if running from repo root or db/
+const backendNodeModules = path.resolve(__dirname, '../backend/node_modules');
+if (!module.paths.includes(backendNodeModules)) {
+  module.paths.push(backendNodeModules);
+}
+
 const dotenv = require('dotenv');
 const bcrypt = require('bcrypt');
 const { Pool } = require('pg');
@@ -17,86 +25,88 @@ const pool = new Pool({
 
 const SALT_ROUNDS = 12;
 
-const seedUsers = [
-  {
-    role: 'admin',
-    email: process.env.SEED_ADMIN_EMAIL || 'admin@trustvault.local',
-    password: process.env.SEED_ADMIN_PASSWORD || process.env.ADMIN_PASSWORD
-  },
-  {
-    role: 'owner',
-    email: process.env.SEED_OWNER1_EMAIL || 'owner1@trustvault.local',
-    password: process.env.SEED_OWNER1_PASSWORD || process.env.OWNER1_PASSWORD
-  },
-  {
-    role: 'owner',
-    email: process.env.SEED_OWNER2_EMAIL || 'owner2@trustvault.local',
-    password: process.env.SEED_OWNER2_PASSWORD || process.env.OWNER2_PASSWORD
-  },
-  {
-    role: 'viewer',
-    email: process.env.SEED_VIEWER1_EMAIL || 'viewer1@trustvault.local',
-    password: process.env.SEED_VIEWER1_PASSWORD || process.env.VIEWER1_PASSWORD
-  },
-  {
-    role: 'viewer',
-    email: process.env.SEED_VIEWER2_EMAIL || 'viewer2@trustvault.local',
-    password: process.env.SEED_VIEWER2_PASSWORD || process.env.VIEWER2_PASSWORD
-  }
-];
+async function seed(existingClient = null) {
+  console.log('Connecting to database for seeding...');
 
-async function seed() {
-  console.log('Connecting to database...');
+  const adminUsername = process.env.SEED_ADMIN_USERNAME;
+  const adminEmail = process.env.SEED_ADMIN_EMAIL;
+  const adminPassword = process.env.SEED_ADMIN_PASSWORD;
 
-  // Validate that all required passwords are provided in environment variables
-  const missingPasswords = [];
-  if (!seedUsers[0].password) missingPasswords.push('SEED_ADMIN_PASSWORD (or ADMIN_PASSWORD)');
-  if (!seedUsers[1].password) missingPasswords.push('SEED_OWNER1_PASSWORD (or OWNER1_PASSWORD)');
-  if (!seedUsers[2].password) missingPasswords.push('SEED_OWNER2_PASSWORD (or OWNER2_PASSWORD)');
-  if (!seedUsers[3].password) missingPasswords.push('SEED_VIEWER1_PASSWORD (or VIEWER1_PASSWORD)');
-  if (!seedUsers[4].password) missingPasswords.push('SEED_VIEWER2_PASSWORD (or VIEWER2_PASSWORD)');
+  // Validate that all three required admin credentials are provided
+  const missing = [];
+  if (!adminUsername || !adminUsername.trim()) missing.push('SEED_ADMIN_USERNAME');
+  if (!adminEmail || !adminEmail.trim()) missing.push('SEED_ADMIN_EMAIL');
+  if (!adminPassword) missing.push('SEED_ADMIN_PASSWORD');
 
-  if (missingPasswords.length > 0) {
-    console.error('Error: Missing required seed passwords in environment variables:');
-    missingPasswords.forEach((key) => console.error(`  - ${key}`));
-    process.exit(1);
+  if (missing.length > 0) {
+    console.error('Error: Missing required seed environment variables:');
+    missing.forEach((v) => console.error(`  - ${v}`));
+    if (!existingClient) {
+      process.exit(1);
+    }
+    throw new Error(`Missing required seed environment variables: ${missing.join(', ')}`);
   }
 
-  const client = await pool.connect();
+  const client = existingClient || (await pool.connect());
+  const shouldManageTx = !existingClient;
 
   try {
-    await client.query('BEGIN');
-
-    for (const u of seedUsers) {
-      const passwordHash = await bcrypt.hash(u.password, SALT_ROUNDS);
-
-      // Parameterised upsert: create user or update password and role if already exists
-      const query = `
-        INSERT INTO users (email, password_hash, role, is_active)
-        VALUES ($1, $2, $3, true)
-        ON CONFLICT (email)
-        DO UPDATE SET
-          password_hash = EXCLUDED.password_hash,
-          role = EXCLUDED.role,
-          is_active = true
-        RETURNING id, email, role, is_active;
-      `;
-
-      const res = await client.query(query, [u.email, passwordHash, u.role]);
-      const created = res.rows[0];
-      console.log(`Seeded user: [${created.role}] ${created.email} (id: ${created.id})`);
+    if (shouldManageTx) {
+      await client.query('BEGIN');
     }
 
-    await client.query('COMMIT');
+    const cleanUsername = adminUsername.trim();
+    const normalisedEmail = adminEmail.trim().toLowerCase();
+
+    // Check if an account with this email already exists (idempotent: never overwrite password)
+    const existingCheck = await client.query(
+      'SELECT id, username, email, role FROM users WHERE LOWER(email) = LOWER($1)',
+      [normalisedEmail]
+    );
+
+    if (existingCheck.rows.length > 0) {
+      const existing = existingCheck.rows[0];
+      console.log(`Admin account already exists for ${existing.email} (id: ${existing.id}). Skipping seed (passwords are never overwritten).`);
+    } else {
+      const passwordHash = await bcrypt.hash(adminPassword, SALT_ROUNDS);
+
+      const query = `
+        INSERT INTO users (username, email, password_hash, role, full_name, is_active)
+        VALUES ($1, $2, $3, 'admin', 'System Administrator', true)
+        ON CONFLICT (email) DO NOTHING
+        RETURNING id, username, email, role, is_active;
+      `;
+
+      const res = await client.query(query, [cleanUsername, normalisedEmail, passwordHash]);
+      if (res.rows.length > 0) {
+        const created = res.rows[0];
+        console.log(`Seeded admin user: [${created.role}] ${created.username} <${created.email}> (id: ${created.id})`);
+      }
+    }
+
+    if (shouldManageTx) {
+      await client.query('COMMIT');
+    }
     console.log('Database seeding completed successfully.');
   } catch (err) {
-    await client.query('ROLLBACK');
+    if (shouldManageTx) {
+      await client.query('ROLLBACK');
+    }
     console.error('Seeding failed:', err.message);
-    process.exit(1);
+    if (!existingClient) {
+      process.exit(1);
+    }
+    throw err;
   } finally {
-    client.release();
-    await pool.end();
+    if (!existingClient) {
+      client.release();
+      await pool.end();
+    }
   }
 }
 
-seed();
+if (require.main === module) {
+  seed();
+}
+
+module.exports = { seed };

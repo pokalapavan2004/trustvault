@@ -6,14 +6,17 @@ CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 -- 1. Users table
 CREATE TABLE IF NOT EXISTS users (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    username VARCHAR(30) NOT NULL CHECK (username ~ '^[a-zA-Z0-9_]{3,30}$'),
     email VARCHAR(255) NOT NULL UNIQUE,
     password_hash VARCHAR(255) NOT NULL,
-    role VARCHAR(20) NOT NULL CHECK (role IN ('admin', 'owner', 'viewer')),
+    role VARCHAR(20) NOT NULL CHECK (role IN ('admin', 'user')),
+    full_name VARCHAR(100),
     is_active BOOLEAN NOT NULL DEFAULT true,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_lower ON users (LOWER(username));
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_lower ON users (LOWER(email));
 
 -- 2. Sessions table (server-side, invalidated when user disabled)
 CREATE TABLE IF NOT EXISTS sessions (
@@ -30,6 +33,7 @@ CREATE TABLE IF NOT EXISTS documents (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     owner_id UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
     title VARCHAR(255) NOT NULL,
+    description TEXT,
     category VARCHAR(100),
     original_filename VARCHAR(255) NOT NULL,
     storage_key VARCHAR(255) NOT NULL UNIQUE,

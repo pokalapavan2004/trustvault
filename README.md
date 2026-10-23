@@ -16,26 +16,31 @@ Every environment variable used by TrustVault is documented below. Configure the
 | `DATABASE_URL` | **Yes** | `postgresql://<user>:<password>@localhost:5432/<database>` | PostgreSQL connection string for `pg` pool, migrations, and seeding. |
 | `DATABASE_SSL` | No | `false` | Enable TLS/SSL for PostgreSQL connection (`true` on Render / managed Postgres, `false` locally). |
 | `LOGIN_RATE_LIMIT_MAX` | No | `10` | Maximum failed login attempts allowed per 15-minute window per IP (successful logins do not consume quota). |
-| `SEED_ADMIN_EMAIL` | No | `admin@trustvault.local` | Email address for the initial seeded administrator account. |
-| `SEED_ADMIN_PASSWORD` (or `ADMIN_PASSWORD`) | **Yes** (for seed) | `<choose-a-strong-password>` | Plaintext password to hash with bcrypt for the seeded administrator account. |
-| `SEED_OWNER1_EMAIL` | No | `owner1@trustvault.local` | Email address for the first seeded owner account. |
-| `SEED_OWNER1_PASSWORD` (or `OWNER1_PASSWORD`) | **Yes** (for seed) | `<choose-a-strong-password>` | Plaintext password to hash with bcrypt for the first seeded owner account. |
-| `SEED_OWNER2_EMAIL` | No | `owner2@trustvault.local` | Email address for the second seeded owner account. |
-| `SEED_OWNER2_PASSWORD` (or `OWNER2_PASSWORD`) | **Yes** (for seed) | `<choose-a-strong-password>` | Plaintext password to hash with bcrypt for the second seeded owner account. |
-| `SEED_VIEWER1_EMAIL` | No | `viewer1@trustvault.local` | Email address for the first seeded viewer account. |
-| `SEED_VIEWER1_PASSWORD` (or `VIEWER1_PASSWORD`) | **Yes** (for seed) | `<choose-a-strong-password>` | Plaintext password to hash with bcrypt for the first seeded viewer account. |
-| `SEED_VIEWER2_EMAIL` | No | `viewer2@trustvault.local` | Email address for the second seeded viewer account. |
-| `SEED_VIEWER2_PASSWORD` (or `VIEWER2_PASSWORD`) | **Yes** (for seed) | `<choose-a-strong-password>` | Plaintext password to hash with bcrypt for the second seeded viewer account. |
+| `SEED_ADMIN_USERNAME` | **Yes** (for seed) | `admin` | Required username for the seeded administrator account. |
+| `SEED_ADMIN_EMAIL` | **Yes** (for seed) | `admin@trustvault.local` | Required email address for the seeded administrator account. |
+| `SEED_ADMIN_PASSWORD` | **Yes** (for seed) | `<choose-a-strong-password>` | Required plaintext password to hash with bcrypt for the seeded administrator account. |
+| `STORAGE_DIR` | No | `./storage` | Filesystem directory where uploaded documents are stored under random UUID keys. |
 | `VITE_API_URL` | No | `http://localhost:5000` | Frontend Vite proxy destination target for `/api` routes during development. |
 
 ---
 
-## Database Architecture (`db/schema.sql`)
+## Role Model & Database Architecture (`db/schema.sql`)
 
-PostgreSQL tables:
-1. `users`: Stores user identity, bcrypt `password_hash`, `role` (`admin`, `owner`, `viewer`), and `is_active` status.
+### Role Model
+- `users.role` is strictly `'admin'` or `'user'`. There is no `'owner'` or `'viewer'` role on user accounts.
+- **Owner**: Refers to the user who uploaded a document (`documents.owner_id`).
+- **Viewer / Editor**: Refers to a user holding a grant permission (`read` or `edit` in `grants`) on a document.
+- Any active `'user'` can upload documents and access documents shared with them.
+- `'admin'` can manage users (enable and disable) and inspect document metadata, audit logs, and activity. Admins can never download or read file contents.
+
+### User Accounts & Registration
+- **Administrator account**: Admin accounts can only be created by the seed script (`db/seed.js`) using `SEED_ADMIN_USERNAME`, `SEED_ADMIN_EMAIL`, and `SEED_ADMIN_PASSWORD`. Seeding is safe to run multiple times: it skips the admin if the email already exists and never overwrites an existing password.
+- **Regular users**: Regular users register directly through the website (`POST /api/auth/register`) and are stored in the PostgreSQL `users` table, not in `.env`. The registration endpoint always assigns role `'user'`.
+
+### PostgreSQL tables
+1. `users`: Stores user identity, case-insensitive unique `username` (3-30 chars, letters/digits/underscore), lowercased unique `email`, optional `full_name`, bcrypt `password_hash`, `role` (`admin`, `user`), and `is_active` status.
 2. `sessions`: Server-side sessions with `id`, `user_id`, and `expires_at`.
-3. `documents`: Tracks document metadata, `owner_id`, `original_filename`, `storage_key`, `size_bytes`, `sha256` checksum, and `deleted_at` for soft deletes.
+3. `documents`: Tracks document metadata, `owner_id` (uploader), `original_filename`, `storage_key`, `size_bytes`, `sha256` checksum, and `deleted_at` for soft deletes.
 4. `grants`: Explicit permission records (`read` or `edit`) granted on documents with unique constraint on `(document_id, user_id)`.
 
 ---
@@ -50,8 +55,11 @@ Ensure PostgreSQL is running and `DATABASE_URL` is configured in your `.env`.
 cd backend
 npm run db:migrate
 
-# Seed users (1 admin, 2 owners, 2 viewers) using passwords from environment variables
+# Seed the initial admin account using environment variables (safe to run repeatedly)
 npm run db:seed
+
+# Or reset database (drops/recreates public schema, runs migrate and seed - refuses in production)
+npm run db:reset
 ```
 
 ### 2. Backend Service

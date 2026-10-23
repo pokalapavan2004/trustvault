@@ -5,6 +5,9 @@ const express = require('express');
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
 const authRouter = require('./routes/auth');
+const profileRouter = require('./routes/profile');
+const documentsRouter = require('./routes/documents');
+const usersRouter = require('./routes/users');
 
 const app = express();
 
@@ -34,8 +37,11 @@ app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// Mount authentication routes
+// Mount routes
 app.use('/api/auth', authRouter);
+app.use('/api/profile', profileRouter);
+app.use('/api/documents', documentsRouter);
+app.use('/api/users', usersRouter);
 
 // 404 handler for undefined routes
 app.use((req, res) => {
@@ -44,6 +50,16 @@ app.use((req, res) => {
 
 // Explicit error handler (No stack traces in responses - AGENTS.md Code style)
 app.use((err, req, res, next) => {
+  // Uniform 404 response for authorization/missing document errors (AGENTS.md Security Invariant 2)
+  if (err.name === 'NotFoundError' || err.status === 404) {
+    return res.status(404).json({ error: 'Document not found' });
+  }
+
+  // Handle Multer upload size limit
+  if (err.code === 'LIMIT_FILE_SIZE') {
+    return res.status(400).json({ error: 'File size exceeds 10 MB limit' });
+  }
+
   console.error('Unhandled application error:', err.message);
 
   const status = err.status || 500;

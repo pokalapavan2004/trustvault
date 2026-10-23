@@ -10,6 +10,13 @@ simple and readable.
 - Tests: Jest + Supertest against a real test Postgres database
 - Deploy: Render (web service + Postgres)
 
+## Role Model
+- `users.role` is strictly 'admin' or 'user'. There is no 'owner' or 'viewer' role on the account.
+- "Owner" refers to the user who uploaded a document (`documents.owner_id`).
+- "Viewer" or "editor" refers to a user holding a grant (`read` or `edit`) on a document.
+- Any active 'user' can upload documents and view documents shared with them.
+- 'admin' can manage users (disable and enable) and see document metadata, audit trail, and activity logs. Admin can never download or read file contents.
+
 ## Security invariants (never break these)
 1. The server decides every access. There is ONE function,
    authorize(user, documentId, action), in src/auth/authorize.js.

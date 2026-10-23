@@ -5,20 +5,30 @@ const fs = require('fs');
 const path = require('path');
 const { pool } = require('./index');
 
-async function migrate() {
+async function migrate(existingClient = null) {
   const schemaPath = path.resolve(__dirname, '../../../db/schema.sql');
   console.log(`Running migration from ${schemaPath}...`);
 
+  const client = existingClient || pool;
   try {
     const sql = fs.readFileSync(schemaPath, 'utf8');
-    await pool.query(sql);
+    await client.query(sql);
     console.log('Database migration applied successfully.');
   } catch (err) {
     console.error('Migration failed:', err.message);
-    process.exit(1);
+    if (!existingClient) {
+      process.exit(1);
+    }
+    throw err;
   } finally {
-    await pool.end();
+    if (!existingClient) {
+      await pool.end();
+    }
   }
 }
 
-migrate();
+if (require.main === module) {
+  migrate();
+}
+
+module.exports = { migrate };
