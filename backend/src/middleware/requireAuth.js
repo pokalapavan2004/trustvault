@@ -3,17 +3,33 @@
 
 const db = require('../db');
 
+// UUID format validation regex (matches RFC 4122 v1-v5 UUIDs)
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+/**
+ * Clears the session cookie using consistent secure settings
+ * @param {import('express').Response} res
+ */
+function clearSessionCookie(res) {
+  res.clearCookie('tv_session', {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: process.env.NODE_ENV === 'production',
+    path: '/'
+  });
+}
+
 async function requireAuth(req, res, next) {
   try {
-    // Read session ID from httpOnly cookie or Authorization Bearer header
-    const sessionId = req.cookies?.tv_session || 
-      (req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7) : null);
+    // 1. Only read the session ID from the cookie tv_session
+    const sessionId = req.cookies?.tv_session;
 
-    if (!sessionId) {
+    // 2. Validate session ID exists and looks like a valid UUID before touching DB
+    if (!sessionId || typeof sessionId !== 'string' || !UUID_REGEX.test(sessionId)) {
       return res.status(401).json({ error: 'Authentication required' });
     }
 
-    // Query DB for session and user details on every request (no caching)
+    // 3. Query DB for session and user details on every request (no caching)
     const result = await db.query(
       `SELECT 
         s.id AS session_id,
@@ -30,11 +46,7 @@ async function requireAuth(req, res, next) {
     );
 
     if (result.rows.length === 0) {
-      res.clearCookie('tv_session', {
-        httpOnly: true,
-        sameSite: 'lax',
-        secure: process.env.NODE_ENV === 'production'
-      });
+      clearSessionCookie(res);
       return res.status(401).json({ error: 'Invalid or expired session' });
     }
 
@@ -43,22 +55,14 @@ async function requireAuth(req, res, next) {
     // Check session expiry
     if (new Date(row.expires_at) <= new Date()) {
       await db.query('DELETE FROM sessions WHERE id = $1', [sessionId]);
-      res.clearCookie('tv_session', {
-        httpOnly: true,
-        sameSite: 'lax',
-        secure: process.env.NODE_ENV === 'production'
-      });
+      clearSessionCookie(res);
       return res.status(401).json({ error: 'Session has expired' });
     }
 
     // Check if user is disabled - invalidate sessions immediately
     if (!row.is_active) {
       await db.query('DELETE FROM sessions WHERE user_id = $1', [row.user_id]);
-      res.clearCookie('tv_session', {
-        httpOnly: true,
-        sameSite: 'lax',
-        secure: process.env.NODE_ENV === 'production'
-      });
+      clearSessionCookie(res);
       return res.status(403).json({ error: 'Account is disabled' });
     }
 

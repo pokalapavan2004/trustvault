@@ -56,11 +56,12 @@ router.post('/login', loginRateLimiter, async (req, res) => {
     // Compare password hash
     const isPasswordValid = await bcrypt.compare(password, user.password_hash);
     if (!isPasswordValid) {
+      // Same generic message for wrong password as for unknown email
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
-    // Generate cryptographically secure random session ID
-    const sessionId = crypto.randomBytes(32).toString('hex');
+    // Generate cryptographically secure UUID session ID
+    const sessionId = crypto.randomUUID();
     const expiresAt = new Date(Date.now() + SESSION_DURATION_MS);
 
     // Save session to database (server-side session store)
@@ -87,12 +88,11 @@ router.post('/login', loginRateLimiter, async (req, res) => {
 
 /**
  * POST /api/auth/logout
- * Deletes session from DB and clears httpOnly session cookie
+ * Deletes session row from DB and clears httpOnly session cookie
  */
 router.post('/logout', async (req, res) => {
   try {
-    const sessionId = req.cookies?.tv_session ||
-      (req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7) : null);
+    const sessionId = req.cookies?.tv_session;
 
     if (sessionId) {
       await db.query('DELETE FROM sessions WHERE id = $1', [sessionId]);
