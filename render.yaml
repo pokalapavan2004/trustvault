@@ -1,0 +1,30 @@
+services:
+  - type: web
+    name: trustvault
+    env: node
+    plan: free
+    buildCommand: npm --prefix frontend install && npm --prefix frontend run build && npm --prefix backend install
+    startCommand: cd backend && npm run db:migrate && npm run db:seed && npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: trustvault-db
+          property: connectionString
+      - key: DATABASE_SSL
+        value: "true"
+      - key: STORAGE_BACKEND
+        value: db
+      - key: SEED_ADMIN_USERNAME
+        sync: false
+      - key: SEED_ADMIN_EMAIL
+        sync: false
+      - key: SEED_ADMIN_PASSWORD
+        sync: false
+
+databases:
+  - name: trustvault-db
+    plan: free
+    databaseName: trustvault
+    user: trustvault

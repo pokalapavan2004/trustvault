@@ -1,6 +1,7 @@
 // src/app.js
 // Express application configuration and middleware pipeline
 
+const path = require('path');
 const express = require('express');
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
@@ -21,7 +22,7 @@ if (process.env.NODE_ENV === 'production') {
 const allowedOrigins = (process.env.CLIENT_URL || 'http://localhost:5173').split(',');
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow requests with no origin (e.g. mobile apps, curl) or matching allowed origins
+    // Allow requests with no origin (e.g. same-origin requests, mobile apps, curl) or matching allowed origins
     if (!origin || allowedOrigins.includes(origin)) {
       return callback(null, true);
     }
@@ -44,6 +45,20 @@ app.use('/api/profile', profileRouter);
 app.use('/api/documents', documentsRouter);
 app.use('/api/users', usersRouter);
 app.use('/api/activity-logs', activityLogsRouter);
+
+// In production, Express serves frontend/dist as static files and returns index.html for any non-/api route
+if (process.env.NODE_ENV === 'production') {
+  const frontendDist = path.resolve(__dirname, '../../frontend/dist');
+  app.use(express.static(frontendDist));
+
+  // SPA fallback for client-side routing
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api')) {
+      return next();
+    }
+    res.sendFile(path.join(frontendDist, 'index.html'));
+  });
+}
 
 // 404 handler for undefined routes
 app.use((req, res) => {

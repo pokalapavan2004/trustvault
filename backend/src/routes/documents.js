@@ -15,10 +15,21 @@ const router = express.Router();
 // UUID format validation regex
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-// Configure storage directory outside public access
+// Configure storage backend: 'db' (PostgreSQL bytea) or 'disk' (filesystem)
+// Controlled by env STORAGE_BACKEND: defaults to 'db' in production, 'disk' in development
+function getStorageBackend() {
+  if (process.env.STORAGE_BACKEND) {
+    return process.env.STORAGE_BACKEND.toLowerCase();
+  }
+  return process.env.NODE_ENV === 'production' ? 'db' : 'disk';
+}
+
+// Storage directory for disk backend
 const STORAGE_DIR = process.env.STORAGE_DIR || path.resolve(__dirname, '../../../storage');
-if (!fs.existsSync(STORAGE_DIR)) {
-  fs.mkdirSync(STORAGE_DIR, { recursive: true });
+function ensureStorageDir() {
+  if (!fs.existsSync(STORAGE_DIR)) {
+    fs.mkdirSync(STORAGE_DIR, { recursive: true });
+  }
 }
 
 // 10 MB maximum upload limit
@@ -30,33 +41,20 @@ const ALLOWED_EXTENSIONS = ['.pdf', '.txt', '.docx', '.xlsx', '.csv', '.png', '.
 // Allowed categories
 const ALLOWED_CATEGORIES = ['General', 'Finance', 'HR', 'Legal', 'IT', 'Education', 'Personal'];
 
-// Multer disk storage storing files under random UUIDs with no extension
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, STORAGE_DIR),
-  filename: (req, file, cb) => {
-    const randomKey = crypto.randomUUID();
-    cb(null, randomKey);
-  }
-});
-
+// Multer memory storage reading uploaded files directly into a memory buffer (10 MB limit)
 const upload = multer({
-  storage,
+  storage: multer.memoryStorage(),
   limits: { fileSize: MAX_FILE_SIZE }
 });
 
 /**
- * Validates file magic bytes against allowed formats
- * @param {string} filePath - Absolute path to stored file
+ * Validates file magic bytes against allowed formats using a Buffer
+ * @param {Buffer} buffer - File buffer in memory
  * @param {string} ext - Lowercase file extension with leading dot
  * @returns {boolean} True if magic bytes match extension
  */
-function validateMagicBytes(filePath, ext) {
-  const buffer = Buffer.alloc(512);
-  const fd = fs.openSync(filePath, 'r');
-  const bytesRead = fs.readSync(fd, buffer, 0, 512, 0);
-  fs.closeSync(fd);
-
-  if (bytesRead === 0) return false;
+function validateMagicBytes(buffer, ext) {
+  if (!buffer || buffer.length === 0) return false;
 
   switch (ext) {
     case '.pdf':
@@ -84,7 +82,7 @@ function validateMagicBytes(filePath, ext) {
 
     case '.txt':
     case '.csv':
-      for (let i = 0; i < bytesRead; i++) {
+      for (let i = 0; i < Math.min(buffer.length, 512); i++) {
         if (buffer[i] === 0x00) return false;
       }
       return true;
@@ -97,39 +95,27 @@ function validateMagicBytes(filePath, ext) {
 /**
  * POST /api/documents
  * Uploads a document and creates initial grants in ONE database transaction.
+ * Stores content in PostgreSQL table document_files or disk according to STORAGE_BACKEND.
  */
 router.post('/', requireAuth, upload.single('file'), async (req, res, next) => {
-  if (!req.file) {
+  if (!req.file || !req.file.buffer) {
     return res.status(400).json({ error: 'File is required' });
   }
-
-  const filePath = req.file.path;
-
-  const cleanupFile = () => {
-    try {
-      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-    } catch (e) {
-      console.error('Failed to cleanup uploaded file:', e.message);
-    }
-  };
 
   const { title, description, category, sharedWith } = req.body || {};
 
   // 1. Validate title
   if (!title || typeof title !== 'string' || title.trim().length === 0) {
-    cleanupFile();
     return res.status(400).json({ error: 'Title is required' });
   }
 
   if (title.trim().length > 255) {
-    cleanupFile();
     return res.status(400).json({ error: 'Title cannot exceed 255 characters' });
   }
 
   // 2. Validate category
   const selectedCategory = category ? category.trim() : 'General';
   if (!ALLOWED_CATEGORIES.includes(selectedCategory)) {
-    cleanupFile();
     return res.status(400).json({
       error: `Invalid category. Must be one of: ${ALLOWED_CATEGORIES.join(', ')}`
     });
@@ -138,14 +124,12 @@ router.post('/', requireAuth, upload.single('file'), async (req, res, next) => {
   // 3. Validate file extension and magic bytes
   const ext = path.extname(req.file.originalname).toLowerCase();
   if (!ALLOWED_EXTENSIONS.includes(ext)) {
-    cleanupFile();
     return res.status(400).json({
       error: `File type not allowed. Allowed types: ${ALLOWED_EXTENSIONS.join(', ')}`
     });
   }
 
-  if (!validateMagicBytes(filePath, ext)) {
-    cleanupFile();
+  if (!validateMagicBytes(req.file.buffer, ext)) {
     return res.status(400).json({
       error: 'File content does not match the declared file extension'
     });
@@ -160,7 +144,6 @@ router.post('/', requireAuth, upload.single('file'), async (req, res, next) => {
         throw new Error('sharedWith must be an array');
       }
     } catch (err) {
-      cleanupFile();
       return res.status(400).json({ error: 'sharedWith must be a valid JSON array of recipients' });
     }
   }
@@ -168,15 +151,16 @@ router.post('/', requireAuth, upload.single('file'), async (req, res, next) => {
   // 5. Calculate file SHA256 checksum
   let sha256;
   try {
-    const fileBuffer = fs.readFileSync(filePath);
-    sha256 = crypto.createHash('sha256').update(fileBuffer).digest('hex');
+    sha256 = crypto.createHash('sha256').update(req.file.buffer).digest('hex');
   } catch (err) {
-    cleanupFile();
     return res.status(500).json({ error: 'Failed to process uploaded file' });
   }
 
-  // 6. Database Transaction: insert document and grants atomically
+  const storageKey = `${crypto.randomUUID()}${ext}`;
+
+  // 6. Database Transaction: insert document, grants, and file in ONE transaction
   const client = await db.pool.connect();
+  let writtenDiskPath = null;
 
   try {
     await client.query('BEGIN');
@@ -197,7 +181,7 @@ router.post('/', requireAuth, upload.single('file'), async (req, res, next) => {
       description && typeof description === 'string' ? description.trim() : null,
       selectedCategory,
       req.file.originalname,
-      req.file.filename,
+      storageKey,
       req.file.mimetype || 'application/octet-stream',
       req.file.size,
       sha256
@@ -210,7 +194,6 @@ router.post('/', requireAuth, upload.single('file'), async (req, res, next) => {
       for (const share of parsedShares) {
         if (!share.email || typeof share.email !== 'string' || !['read', 'edit'].includes(share.permission)) {
           await client.query('ROLLBACK');
-          cleanupFile();
           return res.status(400).json({
             error: 'Each shared recipient must have a valid email and permission (read or edit)'
           });
@@ -243,7 +226,6 @@ router.post('/', requireAuth, upload.single('file'), async (req, res, next) => {
       const unknownEmails = targetEmails.filter((email) => !validUsersMap.has(email));
       if (unknownEmails.length > 0) {
         await client.query('ROLLBACK');
-        cleanupFile();
         return res.status(400).json({
           error: 'One or more recipient emails are invalid or unknown',
           unknownEmails
@@ -263,6 +245,20 @@ router.post('/', requireAuth, upload.single('file'), async (req, res, next) => {
       }
     }
 
+    // Store file in ONE transaction
+    const storageBackend = getStorageBackend();
+    if (storageBackend === 'db') {
+      await client.query(
+        `INSERT INTO document_files (document_id, content) VALUES ($1, $2)`,
+        [createdDoc.id, req.file.buffer]
+      );
+    } else {
+      ensureStorageDir();
+      const diskPath = path.join(STORAGE_DIR, storageKey);
+      fs.writeFileSync(diskPath, req.file.buffer);
+      writtenDiskPath = diskPath;
+    }
+
     await client.query('COMMIT');
 
     await recordAuditAttempt({
@@ -280,7 +276,13 @@ router.post('/', requireAuth, upload.single('file'), async (req, res, next) => {
     });
   } catch (err) {
     await client.query('ROLLBACK');
-    cleanupFile();
+    if (writtenDiskPath && fs.existsSync(writtenDiskPath)) {
+      try {
+        fs.unlinkSync(writtenDiskPath);
+      } catch (cleanupErr) {
+        console.error('Failed to clean up disk file after rollback:', cleanupErr.message);
+      }
+    }
     console.error('Document upload error:', err.message);
     return res.status(500).json({ error: 'Internal server error during document upload' });
   } finally {
@@ -397,16 +399,56 @@ router.get('/:id', requireAuth, async (req, res, next) => {
 /**
  * GET /api/documents/:id/download
  * Downloads document file contents. Calls authorize first before any work.
+ * Verifies SHA-256 integrity check and sends buffer with security headers.
  */
 router.get('/:id/download', requireAuth, async (req, res, next) => {
   try {
     // Central authorization check: called first before any work
     const doc = await authorize(req.user, req.params.id, 'download');
 
-    const filePath = path.join(STORAGE_DIR, doc.storage_key);
+    let fileBuffer = null;
+    const storageBackend = getStorageBackend();
 
-    if (!fs.existsSync(filePath)) {
+    if (storageBackend === 'db') {
+      const fileRes = await db.query(
+        'SELECT content FROM document_files WHERE document_id = $1',
+        [doc.id]
+      );
+      if (fileRes.rows.length > 0 && fileRes.rows[0].content) {
+        fileBuffer = fileRes.rows[0].content;
+      } else {
+        // Fallback to disk if file exists there
+        const diskPath = path.join(STORAGE_DIR, doc.storage_key);
+        if (fs.existsSync(diskPath)) {
+          fileBuffer = fs.readFileSync(diskPath);
+        }
+      }
+    } else {
+      // Disk backend default
+      const diskPath = path.join(STORAGE_DIR, doc.storage_key);
+      if (fs.existsSync(diskPath)) {
+        fileBuffer = fs.readFileSync(diskPath);
+      } else {
+        // Fallback to DB if stored there
+        const fileRes = await db.query(
+          'SELECT content FROM document_files WHERE document_id = $1',
+          [doc.id]
+        );
+        if (fileRes.rows.length > 0 && fileRes.rows[0].content) {
+          fileBuffer = fileRes.rows[0].content;
+        }
+      }
+    }
+
+    if (!fileBuffer) {
       throw new NotFoundError();
+    }
+
+    // SHA-256 integrity check
+    const computedHash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
+    if (computedHash !== doc.sha256) {
+      console.error(`SHA-256 integrity check failed for doc ${doc.id}: expected ${doc.sha256}, got ${computedHash}`);
+      return res.status(500).json({ error: 'File integrity check failed' });
     }
 
     const sanitisedFilename = path.basename(doc.original_filename).replace(/["\r\n\/\\]/g, '_');
@@ -415,16 +457,9 @@ router.get('/:id/download', requireAuth, async (req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Content-Type', doc.mime_type || 'application/octet-stream');
+    res.setHeader('Content-Length', fileBuffer.length);
 
-    const stream = fs.createReadStream(filePath);
-    stream.on('error', (streamErr) => {
-      console.error('File streaming error:', streamErr.message);
-      if (!res.headersSent) {
-        res.status(500).json({ error: 'Error streaming file' });
-      }
-    });
-
-    return stream.pipe(res);
+    return res.status(200).send(fileBuffer);
   } catch (err) {
     next(err);
   }

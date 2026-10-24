@@ -94,3 +94,10 @@ CREATE TRIGGER trg_audit_logs_immutable
 BEFORE UPDATE OR DELETE ON audit_logs
 FOR EACH ROW
 EXECUTE FUNCTION reject_audit_log_modification();
+
+-- 6. Document files table (storing file payloads in DB for ephemeral filesystems)
+CREATE TABLE IF NOT EXISTS document_files (
+    document_id UUID PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE,
+    content BYTEA NOT NULL
+);
+
