@@ -3,7 +3,7 @@ services:
     name: trustvault
     env: node
     plan: free
-    buildCommand: npm --prefix frontend install && npm --prefix frontend run build && npm --prefix backend install
+    buildCommand: npm --prefix frontend install --include=dev && npm --prefix frontend run build && npm --prefix backend install
     startCommand: cd backend && npm run db:migrate && npm run db:seed && npm start
     envVars:
       - key: NODE_ENV
