@@ -9,6 +9,7 @@ const multer = require('multer');
 const db = require('../db');
 const requireAuth = require('../middleware/requireAuth');
 const { authorize, recordAuditAttempt, NotFoundError } = require('../auth/authorize');
+const { recordAudit } = require('../audit/record');
 
 const router = express.Router();
 
@@ -259,16 +260,27 @@ router.post('/', requireAuth, upload.single('file'), async (req, res, next) => {
       writtenDiskPath = diskPath;
     }
 
-    await client.query('COMMIT');
-
-    await recordAuditAttempt({
-      user: req.user,
-      documentId: createdDoc.id,
-      documentTitle: createdDoc.title,
+    // Action audited in the SAME transaction as the change (Requirement B.4)
+    await recordAudit({
+      client,
+      actor: req.user.username,
       action: 'upload',
+      document_id: createdDoc.id,
+      result: 'AUTHORIZED',
+      ip: req.ip || req.socket?.remoteAddress || null,
+      document_title: createdDoc.title,
+      user_id: req.user.id,
+      username: req.user.username,
+      user_email: req.user.email,
       allowed: true,
-      reason: 'AUTHORIZED'
+      reason: 'AUTHORIZED',
+      details: {
+        category: createdDoc.category,
+        size_bytes: createdDoc.size_bytes
+      }
     });
+
+    await client.query('COMMIT');
 
     return res.status(201).json({
       message: 'Document uploaded successfully',

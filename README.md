@@ -44,7 +44,7 @@ Every environment variable used by TrustVault is documented below. Configure the
 3. `documents`: Tracks document metadata, `owner_id` (uploader), `original_filename`, `storage_key`, `size_bytes`, `sha256` checksum, and `deleted_at` for soft deletes.
 4. `grants`: Explicit permission records (`read` or `edit`) granted on documents with unique constraint on `(document_id, user_id)`.
 5. `document_files`: Stores uploaded file payloads in PostgreSQL (`document_id UUID PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE, content BYTEA NOT NULL`) when `STORAGE_BACKEND = 'db'`.
-6. `audit_logs`: Immutable audit trail recording user document actions and access attempts.
+6. `audit_logs`: The audit log is append-only (database triggers block edits and deletes) and hash-chained with SHA-256. A database owner could still bypass the triggers directly, as analyzed in [THREATS.md](file:///c:/Users/DELL/OneDrive/Desktop/snovasys%20task/trustvault/THREATS.md).
 
 ---
 
@@ -122,5 +122,6 @@ TrustVault is configured to deploy as a **single web service** on Render that bu
 - **Server-Side Session Validation (`requireAuth`)**: Loads user and session from the database on every request without caching. Validates that the session ID matches UUID format before touching the database, and immediately invalidates sessions for disabled accounts.
 - **Secure Cookie Settings**: Authentication uses `httpOnly`, `sameSite: 'lax'`, and `secure` (in production) cookies (`tv_session`).
 - **Central Authorization (`authorize`)**: Every document route checks permissions first; unauthorized or forbidden attempts trigger audit log entries and return 404 (preventing document existence oracle leaks).
+- **Cryptographic Audit Trail (`audit_logs`)**: The audit log is append-only (database triggers block edits and deletes) and hash-chained with SHA-256. A database owner could still bypass the triggers directly, as analyzed in [THREATS.md](file:///c:/Users/DELL/OneDrive/Desktop/snovasys%20task/trustvault/THREATS.md).
 - **File Integrity & Security**: Magic bytes verification, extension allowlisting, and SHA-256 integrity checks on download ensure tamper-proof file storage.
 - **Login Rate Limiting**: Mitigates brute-force authentication attempts by restricting login requests per IP window.

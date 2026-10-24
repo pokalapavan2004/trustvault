@@ -148,9 +148,9 @@ router.post('/login', loginRateLimiter, async (req, res) => {
 
     const user = userResult.rows[0];
 
-    // Check account status
+    // Check account status: return same generic 401 as for wrong password (Requirement A.3)
     if (!user.is_active) {
-      return res.status(403).json({ error: 'Account is disabled' });
+      return res.status(401).json({ error: 'Invalid email or password' });
     }
 
     // Compare password hash

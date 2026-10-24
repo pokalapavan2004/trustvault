@@ -175,11 +175,11 @@ describe('Admin Activity Logs and Audit Trail Invariants', () => {
     // UPDATE attempt must fail
     await expect(
       db.query("UPDATE audit_logs SET action = 'tampered' WHERE id = $1", [logId])
-    ).rejects.toThrow(/immutable and append-only/i);
+    ).rejects.toThrow(/append-only/i);
 
     // DELETE attempt must fail
     await expect(
       db.query('DELETE FROM audit_logs WHERE id = $1', [logId])
-    ).rejects.toThrow(/immutable and append-only/i);
+    ).rejects.toThrow(/append-only/i);
   });
 });

@@ -61,31 +61,64 @@ CREATE TABLE IF NOT EXISTS grants (
 CREATE INDEX IF NOT EXISTS idx_grants_user_id ON grants(user_id);
 CREATE INDEX IF NOT EXISTS idx_grants_document_id ON grants(document_id);
 
--- 5. Audit logs table (append-only, cryptographic hash chain, immutable)
+-- 5. Audit logs table (append-only, cryptographic hash chain)
 CREATE TABLE IF NOT EXISTS audit_logs (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID,
-    username VARCHAR(30),
-    user_email VARCHAR(255),
-    document_id UUID,
-    document_title VARCHAR(255),
+    id BIGSERIAL PRIMARY KEY,
+    actor VARCHAR(255) NOT NULL DEFAULT 'unknown',
     action VARCHAR(50) NOT NULL,
-    allowed BOOLEAN NOT NULL,
-    reason VARCHAR(50) NOT NULL,
-    previous_hash VARCHAR(64) NOT NULL,
+    document_id UUID,
+    result VARCHAR(50) NOT NULL DEFAULT 'AUTHORIZED',
+    ip VARCHAR(100),
+    details JSONB,
+    prev_hash VARCHAR(64) NOT NULL,
     hash VARCHAR(64) NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    user_id UUID,
+    username VARCHAR(100),
+    user_email VARCHAR(255),
+    document_title VARCHAR(255),
+    allowed BOOLEAN,
+    reason VARCHAR(50),
+    previous_hash VARCHAR(64)
 );
 
 CREATE INDEX IF NOT EXISTS idx_audit_logs_user_id ON audit_logs(user_id);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_document_id ON audit_logs(document_id);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at);
 
--- Trigger to enforce append-only immutability (Invariant 6)
+-- Idempotent column check if table already existed with older schema
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name = 'audit_logs' AND column_name = 'id' AND data_type = 'uuid'
+    ) THEN
+        DROP TRIGGER IF EXISTS trg_audit_logs_immutable ON audit_logs;
+        DROP TRIGGER IF EXISTS trg_audit_logs_truncate ON audit_logs;
+        ALTER TABLE audit_logs DROP CONSTRAINT IF EXISTS audit_logs_pkey;
+        ALTER TABLE audit_logs DROP COLUMN IF EXISTS id;
+        ALTER TABLE audit_logs ADD COLUMN id BIGSERIAL PRIMARY KEY;
+    END IF;
+
+    ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS actor VARCHAR(255);
+    ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS result VARCHAR(50);
+    ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS ip VARCHAR(100);
+    ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS details JSONB;
+    ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS prev_hash VARCHAR(64);
+    ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS previous_hash VARCHAR(64);
+    ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS user_id UUID;
+    ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS username VARCHAR(100);
+    ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS user_email VARCHAR(255);
+    ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS document_title VARCHAR(255);
+    ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS allowed BOOLEAN;
+    ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS reason VARCHAR(50);
+END $$;
+
+-- Triggers to enforce append-only log (Requirement B.3)
 CREATE OR REPLACE FUNCTION reject_audit_log_modification()
 RETURNS TRIGGER AS $$
 BEGIN
-    RAISE EXCEPTION 'Audit log entries are immutable and append-only';
+    RAISE EXCEPTION 'Audit log entries are append-only';
 END;
 $$ LANGUAGE plpgsql;
 
@@ -94,6 +127,20 @@ CREATE TRIGGER trg_audit_logs_immutable
 BEFORE UPDATE OR DELETE ON audit_logs
 FOR EACH ROW
 EXECUTE FUNCTION reject_audit_log_modification();
+
+DROP TRIGGER IF EXISTS trg_audit_logs_truncate ON audit_logs;
+CREATE TRIGGER trg_audit_logs_truncate
+BEFORE TRUNCATE ON audit_logs
+FOR EACH STATEMENT
+EXECUTE FUNCTION reject_audit_log_modification();
+
+-- Revoke UPDATE, DELETE, TRUNCATE where role allows it (Requirement B.3)
+DO $$
+BEGIN
+    EXECUTE 'REVOKE UPDATE, DELETE, TRUNCATE ON audit_logs FROM PUBLIC';
+EXCEPTION WHEN OTHERS THEN
+    NULL;
+END $$;
 
 -- 6. Document files table (storing file payloads in DB for ephemeral filesystems)
 CREATE TABLE IF NOT EXISTS document_files (

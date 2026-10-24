@@ -735,12 +735,55 @@ function AdminDashboardView({ onManageAccess }) {
   const [logFilter, setLogFilter] = useState('all');
   const [logsLoading, setLogsLoading] = useState(true);
 
+  // Audit integrity state (Requirement B.6)
+  const [headHash, setHeadHash] = useState(null);
+  const [verifyStatus, setVerifyStatus] = useState(null);
+  const [verifying, setVerifying] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const fetchHead = async () => {
+    try {
+      const res = await fetch('/api/admin/audit/head', { credentials: 'include' });
+      if (res.ok) {
+        const data = await res.json();
+        setHeadHash(data.hash);
+      }
+    } catch (err) {
+      console.error('Failed to fetch audit head:', err);
+    }
+  };
+
+  const handleVerify = async () => {
+    try {
+      setVerifying(true);
+      setVerifyStatus(null);
+      const res = await fetch('/api/admin/audit/verify', { credentials: 'include' });
+      const data = await res.json();
+      setVerifyStatus(data);
+      if (data.headHash) {
+        setHeadHash(data.headHash);
+      }
+    } catch (err) {
+      setVerifyStatus({ ok: false, error: err.message });
+    } finally {
+      setVerifying(false);
+    }
+  };
+
+  const handleCopyHash = () => {
+    if (headHash) {
+      navigator.clipboard.writeText(headHash);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2500);
+    }
+  };
+
   const loadAdminData = async () => {
     try {
       setLoading(true);
       const [docsRes, usersRes] = await Promise.all([
         fetch('/api/documents', { credentials: 'include' }),
-        fetch('/api/users', { credentials: 'include' })
+        fetch('/api/admin/users', { credentials: 'include' })
       ]);
 
       if (docsRes.ok) {
@@ -752,7 +795,7 @@ function AdminDashboardView({ onManageAccess }) {
 
       if (usersRes.ok) {
         const uData = await usersRes.json();
-        setUserCount((uData.users || []).length);
+        setUserCount(uData.total !== undefined ? uData.total : (uData.users || []).length);
       }
     } catch (err) {
       console.error('Failed to load admin metrics:', err);
@@ -782,6 +825,7 @@ function AdminDashboardView({ onManageAccess }) {
 
   useEffect(() => {
     loadAdminData();
+    fetchHead();
   }, []);
 
   useEffect(() => {
@@ -798,6 +842,8 @@ function AdminDashboardView({ onManageAccess }) {
       case 'revoke': return 'Revoke Grant';
       case 'list_grants': return 'List Grants';
       case 'upload': return 'Upload File';
+      case 'user_disabled': return 'User Disabled';
+      case 'user_enabled': return 'User Enabled';
       default: return action;
     }
   };
@@ -824,6 +870,69 @@ function AdminDashboardView({ onManageAccess }) {
         <div className="metric-card">
           <span className="metric-label" style={{ color: '#fda4af' }}>Unauthorized Attempts</span>
           <div className="metric-value" style={{ color: '#fda4af' }}>{logCounts.denied_count || 0}</div>
+        </div>
+      </div>
+
+      {/* Cryptographic Verification & External Head Hash (Requirement B.6) */}
+      <div className="card" style={{ marginBottom: '24px', background: 'var(--bg-card)', border: '1px solid var(--border-color)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '16px' }}>
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+              <span style={{ fontSize: '1.05rem', fontWeight: 600 }}>Audit Chain Verification</span>
+              <span className="hash-pill" style={{ fontSize: '0.75rem' }}>SHA-256</span>
+            </div>
+            <p style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)', maxWidth: '650px', margin: 0 }}>
+              Save this hash somewhere outside the database. If rows are ever removed from the end of the log, only a saved hash can show it.
+            </p>
+          </div>
+
+          <button
+            className="btn-primary"
+            onClick={handleVerify}
+            disabled={verifying}
+            style={{ fontSize: '0.8125rem', padding: '8px 16px' }}
+          >
+            {verifying ? 'Verifying chain...' : 'Verify integrity'}
+          </button>
+        </div>
+
+        {/* Verification Result Display */}
+        {verifyStatus && (
+          <div style={{ marginTop: '14px' }}>
+            {verifyStatus.ok ? (
+              <div className="alert-box alert-success" style={{ margin: 0, padding: '10px 14px' }}>
+                <span>
+                  ✓ Chain integrity verified: all {verifyStatus.rows} rows are contiguous and hashes match up to head.
+                </span>
+              </div>
+            ) : (
+              <div className="alert-box alert-error" style={{ margin: 0, padding: '10px 14px' }}>
+                <span>
+                  ⚠ Verification failed! Chain broken at row ID {verifyStatus.brokenId || 'unknown'}.
+                  {verifyStatus.reason && ` (${verifyStatus.reason})`}
+                </span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Latest Head Hash with Copy Button */}
+        <div style={{ marginTop: '14px', display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+          <span style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase' }}>
+            Latest Log Hash:
+          </span>
+          <code style={{ fontSize: '0.75rem', background: 'var(--bg-secondary)', padding: '4px 8px', borderRadius: '4px', wordBreak: 'break-all', fontFamily: 'var(--font-mono)' }}>
+            {headHash || 'Loading latest hash...'}
+          </code>
+          {headHash && (
+            <button
+              className="btn-outline"
+              onClick={handleCopyHash}
+              style={{ fontSize: '0.75rem', padding: '4px 10px' }}
+            >
+              {copied ? '✓ Copied' : 'Copy hash'}
+            </button>
+          )}
         </div>
       </div>
 
@@ -1334,17 +1443,23 @@ function UsersAdminView({ user: currentUser }) {
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState('');
+  const [errorMsg, setErrorMsg] = useState('');
 
   const loadUsers = async () => {
     try {
       setLoading(true);
-      const res = await fetch('/api/users', { credentials: 'include' });
+      setErrorMsg('');
+      const res = await fetch('/api/admin/users', { credentials: 'include' });
       if (res.ok) {
         const data = await res.json();
         setUsers(data.users || []);
+      } else {
+        const err = await res.json();
+        setErrorMsg(err.error || 'Failed to load user accounts');
       }
     } catch (err) {
       console.error(err);
+      setErrorMsg('Network error while loading user accounts');
     } finally {
       setLoading(false);
     }
@@ -1363,11 +1478,12 @@ function UsersAdminView({ user: currentUser }) {
     }
 
     try {
-      const res = await fetch(`/api/users/${targetUser.id}/status`, {
+      setErrorMsg('');
+      const res = await fetch(`/api/admin/users/${targetUser.id}/status`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ is_active: nextStatus })
+        body: JSON.stringify({ isActive: nextStatus })
       });
 
       if (res.ok) {
@@ -1375,10 +1491,10 @@ function UsersAdminView({ user: currentUser }) {
         loadUsers();
       } else {
         const err = await res.json();
-        alert(err.error || 'Failed to update user status');
+        setErrorMsg(err.error || 'Failed to update user status');
       }
     } catch (e) {
-      alert(e.message);
+      setErrorMsg(e.message);
     }
   };
 
@@ -1389,6 +1505,7 @@ function UsersAdminView({ user: currentUser }) {
       </div>
 
       {msg && <div className="alert-box alert-success">{msg}</div>}
+      {errorMsg && <div className="alert-box alert-error">{errorMsg}</div>}
 
       <div className="table-card">
         {loading ? (
@@ -1401,40 +1518,50 @@ function UsersAdminView({ user: currentUser }) {
                 <th>Email</th>
                 <th>Role</th>
                 <th>Status</th>
-                <th>Member Since</th>
+                <th>Created Date</th>
+                <th>Documents Owned</th>
                 <th style={{ textAlign: 'right' }}>Action</th>
               </tr>
             </thead>
             <tbody>
-              {users.map((u) => (
-                <tr key={u.id}>
-                  <td><strong>{u.username}</strong></td>
-                  <td>{u.email}</td>
-                  <td><span className={`user-badge role-${u.role}`}>{u.role}</span></td>
-                  <td>
-                    {u.is_active ? (
-                      <span style={{ color: '#34d399', fontWeight: 600 }}>Active</span>
-                    ) : (
-                      <span style={{ color: '#fb7185', fontWeight: 600 }}>Disabled</span>
-                    )}
-                  </td>
-                  <td>{new Date(u.created_at).toLocaleDateString()}</td>
-                  <td>
-                    <div className="actions-cell">
-                      {u.id !== currentUser.id ? (
-                        <button
-                          className={u.is_active ? 'btn-danger' : 'btn-outline'}
-                          onClick={() => handleToggleStatus(u)}
-                        >
-                          {u.is_active ? 'Disable' : 'Enable'}
-                        </button>
+              {users.map((u) => {
+                const isSelf = u.id === currentUser.id;
+                const isAdmin = u.role === 'admin';
+                return (
+                  <tr key={u.id}>
+                    <td><strong>{u.username}</strong></td>
+                    <td>{u.email}</td>
+                    <td><span className={`user-badge role-${u.role}`}>{u.role}</span></td>
+                    <td>
+                      {u.is_active ? (
+                        <span style={{ color: '#34d399', fontWeight: 600 }}>Active</span>
                       ) : (
-                        <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>(Current)</span>
+                        <span style={{ color: '#fb7185', fontWeight: 600 }}>Disabled</span>
                       )}
-                    </div>
-                  </td>
-                </tr>
-              ))}
+                    </td>
+                    <td>{new Date(u.created_at).toLocaleDateString()}</td>
+                    <td>
+                      <span className="count-pill">{u.documents_count ?? u.documents_owned ?? 0}</span>
+                    </td>
+                    <td>
+                      <div className="actions-cell">
+                        {isSelf ? (
+                          <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>(Current)</span>
+                        ) : isAdmin ? (
+                          <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>Protected Admin</span>
+                        ) : (
+                          <button
+                            className={u.is_active ? 'btn-danger' : 'btn-outline'}
+                            onClick={() => handleToggleStatus(u)}
+                          >
+                            {u.is_active ? 'Disable' : 'Enable'}
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         )}

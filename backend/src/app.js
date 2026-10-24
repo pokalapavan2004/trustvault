@@ -10,6 +10,7 @@ const profileRouter = require('./routes/profile');
 const documentsRouter = require('./routes/documents');
 const usersRouter = require('./routes/users');
 const activityLogsRouter = require('./routes/audit');
+const adminRouter = require('./routes/admin');
 
 const app = express();
 
@@ -43,6 +44,7 @@ app.get('/health', (req, res) => {
 app.use('/api/auth', authRouter);
 app.use('/api/profile', profileRouter);
 app.use('/api/documents', documentsRouter);
+app.use('/api/admin', adminRouter);
 app.use('/api/users', usersRouter);
 app.use('/api/activity-logs', activityLogsRouter);
 

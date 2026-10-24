@@ -39,17 +39,22 @@ router.get('/', requireAuth, async (req, res) => {
         user_id,
         username,
         user_email,
+        actor,
         document_id,
         document_title,
         action,
         allowed,
         reason,
-        previous_hash,
+        result,
+        ip,
+        details,
+        COALESCE(prev_hash, previous_hash) AS previous_hash,
+        prev_hash,
         hash,
         created_at
       FROM audit_logs
       ${whereClause}
-      ORDER BY created_at DESC
+      ORDER BY id DESC
       LIMIT $1 OFFSET $2;
     `;
 
