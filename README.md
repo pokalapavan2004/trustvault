@@ -125,3 +125,13 @@ TrustVault is configured to deploy as a **single web service** on Render that bu
 - **Cryptographic Audit Trail (`audit_logs`)**: The audit log is append-only (database triggers block edits and deletes) and hash-chained with SHA-256. A database owner could still bypass the triggers directly, as analyzed in [THREATS.md](file:///c:/Users/DELL/OneDrive/Desktop/snovasys%20task/trustvault/THREATS.md).
 - **File Integrity & Security**: Magic bytes verification, extension allowlisting, and SHA-256 integrity checks on download ensure tamper-proof file storage.
 - **Login Rate Limiting**: Mitigates brute-force authentication attempts by restricting login requests per IP window.
+
+
+## Demo accounts
+
+| Role  | Login          | Password         |
+|-------|----------------|------------------|
+| Admin | admin@gmail.com| admin@1234       |
+| User1 | user1@gmail.com| user1@1234       |
+| User2 | user2@gmail.com| user2@1234       |
+| User3 | user3@gmail.com| user3@1234       |
