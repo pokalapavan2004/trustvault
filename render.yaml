@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: trustvault
+    name: pavan-trustvault
     env: node
     plan: free
     buildCommand: npm --prefix frontend install --include=dev && npm --prefix frontend run build && npm --prefix backend install
