@@ -2,6 +2,9 @@
 
 TrustVault is a secure document sharing platform featuring a cryptographic audit trail and strict server-side access control invariants.
 
+- **API Documentation**: See [API.md](API.md) for full endpoint specifications, role matrices, and authorization rules.
+- **Threat Model**: See [THREATS.md](THREATS.md) for security threat analyses and mitigations.
+
 ---
 
 ## Environment Variables
